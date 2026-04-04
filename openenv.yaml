@@ -1,0 +1,98 @@
+name: data-pipeline-repair
+version: "1.0.0"
+description: >
+  An OpenEnv environment where an LLM/RL agent diagnoses and repairs broken
+  ETL pipeline configurations. The agent iteratively patches a pipeline config
+  JSON and validates output against expected rows using a real Python executor.
+  Covers type errors, missing columns, date format mismatches, and silent join
+  duplication bugs.
+author: "your-hf-username"
+tags:
+  - openenv
+  - data-engineering
+  - debugging
+  - structured-output
+  - real-world
+
+observation_space:
+  type: dict
+  fields:
+    pipeline_name:          {type: str}
+    pipeline_config:        {type: object, description: "Current pipeline config with steps array"}
+    error_log:              {type: str,    description: "Python exception from last run, or empty string"}
+    input_schema:           {type: object, description: "columns and types of input data"}
+    expected_output_schema: {type: object, description: "columns and types of expected output"}
+    sample_input_rows:      {type: array,  description: "List of input row dicts"}
+    current_output_rows:    {type: array,  description: "Output rows from current config"}
+    comparison:             {type: object, description: "row_match, schema_match, count_match"}
+    fix_attempts:           {type: array,  description: "History of patches and their results"}
+    step_number:            {type: int}
+
+action_space:
+  type: dict
+  fields:
+    diagnosis:
+      type: str
+      description: "Agent's hypothesis about the root cause of the bug"
+      required: false
+    patch:
+      type: object
+      required: false
+      fields:
+        step_index: {type: int,    description: "0-indexed step in pipeline_config.steps"}
+        field:      {type: str,    description: "Dot-notation path, e.g. params.null_handling"}
+        old_value:  {type: any,    required: false}
+        new_value:  {type: any,    description: "Replacement value"}
+    validate_only:
+      type: bool
+      default: false
+      description: "If true, run pipeline without applying a patch"
+
+reward:
+  type: float
+  range: [-0.20, 0.35]
+  description: >
+    Per-step reward. Positive for correct diagnosis keywords, schema fix,
+    row match improvement, and solving the task. Negative for wasted patches,
+    wrong step targets, and post-solve actions.
+
+tasks:
+  - id: easy
+    description: >
+      Single type-cast bug. The pipeline crashes with a ValueError when
+      casting "N/A" to int. Fix: set null_handling to "coerce" in step 0.
+    max_steps: 4
+    success_threshold: 0.80
+
+  - id: medium
+    description: >
+      Upstream column dropped in select, causing a KeyError in the downstream
+      aggregation. Fix: add "region" back to step 1's columns list.
+    max_steps: 6
+    success_threshold: 0.75
+
+  - id: hard
+    description: >
+      Two silent bugs with no error log. Bug 1: wrong date format causes
+      all dates to become null. Bug 2: duplicate join keys inflate MRR sums.
+      Agent must diff actual vs expected output and issue two patches.
+    max_steps: 8
+    success_threshold: 0.70
+
+endpoints:
+  reset:
+    method: POST
+    path: /reset
+    body: '{"task": "easy|medium|hard"}'
+    returns: Observation
+
+  step:
+    method: POST
+    path: /step
+    body: Action
+    returns: "{observation, reward, done, info}"
+
+  state:
+    method: GET
+    path: /state
+    returns: "Session metadata"
