@@ -13,17 +13,19 @@ import json
 import time
 import requests
 from openai import OpenAI
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 API_BASE = os.environ.get("API_BASE_URL", "https://api.groq.com/openai/v1")
 MODEL    = os.environ.get("MODEL_NAME",   "llama-3.3-70b-versatile")
 ENV_URL  = os.environ.get("ENV_URL",     "https://hollow-abyss-data-pipeline-repair.hf.space")
 
-# Key fallback: OPENAI_API_KEY → HF_TOKEN → hardcoded Groq key
-API_KEY = (
-    os.environ.get("OPENAI_API_KEY")
-    or os.environ.get("HF_TOKEN")
-    or "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"
-)
+API_KEY = os.environ.get("OPENAI_API_KEY")
+
+if not API_KEY:
+    raise ValueError("OPENAI_API_KEY environment variable is not set. Please set it in your .env file.")
 
 client = OpenAI(base_url=API_BASE, api_key=API_KEY)
 
@@ -218,7 +220,7 @@ def run_task(task_id: str) -> float:
         rewards.append(reward)
         step += 1
 
-        time.sleep(2.0)   # avoid Groq TPM rate limits with larger model
+        time.sleep(0.5)
 
     min_possible  = max_steps * -0.20
     best_possible = 0.70
@@ -242,3 +244,22 @@ if __name__ == "__main__":
     for k, v in all_scores.items():
         print(f"  {k}: {v}")
     print(f"  mean: {mean_score}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
