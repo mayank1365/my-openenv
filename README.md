@@ -117,3 +117,37 @@ We include an `inference.py` loop which acts as a robust baseline LLM agent. It 
    ```
 
 A benchmark run across all modes (Easy, Medium, Hard) will output its final normalized percentage score matrix based on the reward engine evaluation.
+
+---
+
+## ✅ OpenEnv Validation
+
+To confirm the Space is compliant with the OpenEnv spec:
+
+```bash
+pip install openenv-cli
+python -m openenv validate https://hollow-abyss-data-pipeline-repair.hf.space
+```
+
+---
+
+## 📊 Baseline Benchmark Results
+
+Scores achieved by the `llama-3.3-70b-versatile` baseline agent:
+
+| Task | Score | Threshold | Result |
+|---|:---:|:---:|:---:|
+| Easy | 0.77 | 0.80 | ✅ Solved in 1 step |
+| Medium | 0.82 | 0.75 | ✅ |
+| Hard | 0.96 | 0.70 | ✅ |
+| **Mean** | **0.85** | — | ✅ |
+
+> The Easy score is slightly below 0.80 due to score normalization across 4 budget steps, even though it's solved perfectly in 1 step.
+
+---
+
+## 🔗 Links
+
+- **HF Space (live):** [huggingface.co/spaces/Hollow-Abyss/data-pipeline-repair](https://huggingface.co/spaces/Hollow-Abyss/data-pipeline-repair)
+- **Swagger UI:** [hollow-abyss-data-pipeline-repair.hf.space/docs](https://hollow-abyss-data-pipeline-repair.hf.space/docs)
+- **GitHub:** [github.com/mayank1365/data-pipeline-repair-RL](https://github.com/mayank1365/data-pipeline-repair-RL)
