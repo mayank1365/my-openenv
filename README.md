@@ -14,7 +14,7 @@ tags:
 license: mit
 ---
 
-# data-pipeline-repair
+# data-pipeline-repair-RL
 
 An OpenEnv environment where an LLM/RL agent debugs broken ETL pipelines.
 
