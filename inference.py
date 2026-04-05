@@ -2,10 +2,10 @@
 inference.py — Baseline LLM agent for data-pipeline-repair.
 
 Usage:
-  export API_BASE_URL=https://api.openai.com/v1
-  export MODEL_NAME=gpt-4o-mini
-  export HF_TOKEN=your_token          # used as OpenAI api_key
-  export ENV_URL=http://localhost:7860 # or your HF Space URL
+  export API_BASE_URL=https://api.groq.com/openai/v1
+  export MODEL_NAME=llama-3.1-8b-instant
+  export OPENAI_API_KEY=gsk_...      # Groq key (or any OpenAI-compat key)
+  export ENV_URL=https://hollow-abyss-data-pipeline-repair.hf.space
   python inference.py
 """
 import os
@@ -14,41 +14,157 @@ import time
 import requests
 from openai import OpenAI
 
-API_BASE = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
-MODEL    = os.environ.get("MODEL_NAME",   "gpt-4o-mini")
-HF_TOKEN = os.environ.get("HF_TOKEN",    "x")
-ENV_URL  = os.environ.get("ENV_URL",     "http://localhost:7860")
+API_BASE = os.environ.get("API_BASE_URL", "https://api.groq.com/openai/v1")
+MODEL    = os.environ.get("MODEL_NAME",   "llama-3.1-8b-instant")
+ENV_URL  = os.environ.get("ENV_URL",     "https://hollow-abyss-data-pipeline-repair.hf.space")
 
-client = OpenAI(base_url=API_BASE, api_key=HF_TOKEN)
+# Key fallback: OPENAI_API_KEY → HF_TOKEN → hardcoded Groq key
+API_KEY = (
+    os.environ.get("OPENAI_API_KEY")
+    or os.environ.get("HF_TOKEN")
+    or "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"
+)
+
+client = OpenAI(base_url=API_BASE, api_key=API_KEY)
 
 SYSTEM_PROMPT = """You are a data engineering agent. You debug broken ETL pipeline configs.
 
-At each step you receive a JSON observation. You must respond with a single JSON object:
+At each step you receive a JSON observation and must respond with exactly ONE JSON object.
+
+=== OUTPUT FORMAT ===
 {
-  "diagnosis": "<brief hypothesis about the root cause>",
+  "diagnosis": "<root cause hypothesis — be specific>",
   "patch": {
-    "step_index": <int: which step in pipeline_config.steps to fix>,
-    "field": "<dot.notation.path e.g. params.null_handling>",
+    "step_index": <int: 0-indexed step to fix>,
+    "field": "<dot.notation path e.g. params.null_handling>",
     "old_value": <current value, optional>,
     "new_value": <replacement value>
   },
   "validate_only": false
 }
+Omit "patch" when using validate_only:true.
 
-Rules:
-1. Always include a "diagnosis" string explaining your hypothesis.
-2. Only include "patch" when you have identified a specific fix.
-3. Set "validate_only": true (and omit "patch") to inspect the pipeline output without making a change.
-4. To fix the pipeline you must make the current_output_rows match the expected_output_schema.
-5. When error_log is empty, compare current_output_rows vs expected_output_schema carefully — there may be silent bugs (wrong values, wrong row count, null fields).
-6. The patch field uses dot-notation: "params.null_handling" edits pipeline_config.steps[step_index]["params"]["null_handling"].
-7. Do not patch steps that are not causing the problem.
-8. If row_match in comparison is 1.0, respond with {"diagnosis": "pipeline is fixed", "validate_only": true}.
+=== VALID FIELD VALUES ===
+- params.null_handling: ONLY "coerce", "drop", or "error". NEVER use "skip", "ignore", or any other value.
+- params.dedup_right: true or false (boolean, not string)
+- params.format (date_parse): Python strptime format strings e.g. "%Y-%m-%d", "%Y/%m/%d"
 
-Respond ONLY with valid JSON. No markdown, no preamble."""
+=== DECISION RULES ===
+
+1. READ error_log FIRST. If it contains a step number and error type, fix that exact step.
+   - "Cannot cast X to int (null_handling='error'...)" → set params.null_handling to "coerce"
+   - "Column(s) not found: ['region']" at step N → fix the upstream select step to include that column
+
+2. If error_log is EMPTY, inspect current_output_rows for silent bugs:
+   - Are any values null that should not be? → check date_parse format or cast null_handling
+   - Is row count wrong (more rows than expected)? → check join for dedup_right:false with duplicate right_rows
+   - Are numeric values inflated (e.g. 2x expected)? → join duplication; set params.dedup_right=true
+
+3. Fix ROOT CAUSE, not symptoms:
+   - Missing column error in agg/filter → fix the upstream select step, NOT the agg step
+   - Do NOT patch aggregation params when the real issue is missing input columns
+
+4. NEVER repeat a patch you already applied. Check fix_attempts carefully before proposing a patch.
+   If a patch did not improve row_match, it either didn't fix the right thing or introduced the wrong value.
+   Try a DIFFERENT field or a DIFFERENT new_value.
+
+5. NEVER toggle between two values (e.g. "error" → "skip" → "error" → ...). If a value didn't work, move on.
+
+6. When unsure, validate first WITHOUT patching to inspect output:
+   {"diagnosis": "checking current state", "validate_only": true}
+
+7. Stop immediately when solved:
+   If comparison.row_match == 1.0:
+   {"diagnosis": "pipeline is fixed", "validate_only": true}
+
+=== MULTI-BUG STRATEGY (for hard tasks) ===
+When error_log is empty and row_match < 1.0 after a patch:
+- Check EVERY field in current_output_rows for anomalies, not just the one you fixed.
+- Common silent bug pairs:
+  a. Wrong date format (all dates become null) + join duplication (MRR inflated)
+  b. Fix them ONE at a time. After each patch, re-examine current_output_rows.
+
+=== ANTI-PATTERNS — NEVER DO THESE ===
+- Do NOT use null_handling="skip" — it is not a valid value
+- Do NOT modify params.right_rows directly — use params.dedup_right=true instead
+- Do NOT patch steps unrelated to the bug
+- Do NOT repeat the same (step_index, field, new_value) combination from fix_attempts
+- Do NOT make multiple changes in one patch
+
+Respond ONLY with valid JSON. No markdown, no explanations outside the JSON."""
 
 
-def call_llm(messages: list[dict]) -> str:
+def _build_history(fix_attempts: list[dict]) -> list[dict]:
+    """
+    Convert fix_attempts into alternating user/assistant messages
+    so the model has real memory of what it tried and what happened.
+    """
+    messages = []
+    for attempt in fix_attempts:
+        # Reconstruct what the agent sent
+        action = {
+            "diagnosis": attempt.get("diagnosis", ""),
+            "patch":     attempt.get("patch"),
+        }
+        messages.append({"role": "assistant", "content": json.dumps(action)})
+        # Summarize the result as a system-style feedback message
+        feedback = {
+            "result": "patch_applied" if attempt.get("patch") else "validate_only",
+            "row_match_after": attempt.get("row_match", 0.0),
+            "reward":          attempt.get("reward", 0.0),
+            "note": (
+                "✅ Improvement!" if attempt.get("reward", 0) > 0
+                else "❌ No improvement — try a different approach."
+            ),
+        }
+        messages.append({"role": "user", "content": json.dumps(feedback)})
+    return messages
+
+
+def call_llm(obs: dict, fix_attempts: list[dict]) -> str:
+    """Build a multi-turn conversation and call the LLM."""
+    # Initial observation (the full context)
+    initial_context = {
+        "pipeline_config":        obs["pipeline_config"],
+        "error_log":              obs["error_log"],
+        "sample_input_rows":      obs["sample_input_rows"],
+        "current_output_rows":    obs["current_output_rows"],
+        "expected_output_schema": obs["expected_output_schema"],
+        "comparison":             obs["comparison"],
+        "step_number":            obs["step_number"],
+    }
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    if fix_attempts:
+        # First message: initial broken state
+        messages.append({
+            "role": "user",
+            "content": json.dumps(initial_context) + "\n\n[No patches applied yet. Diagnose the bug.]"
+        })
+        # Interleave history of (action → result) pairs
+        messages.extend(_build_history(fix_attempts))
+        # Final user message: current state after all patches
+        messages.append({
+            "role": "user",
+            "content": (
+                f"Current state after {len(fix_attempts)} attempt(s):\n"
+                + json.dumps({
+                    "pipeline_config":     obs["pipeline_config"],
+                    "error_log":           obs["error_log"],
+                    "current_output_rows": obs["current_output_rows"],
+                    "comparison":          obs["comparison"],
+                }, indent=2)
+                + "\n\nWhat is your next action?"
+            )
+        })
+    else:
+        # First step — just the raw observation
+        messages.append({
+            "role": "user",
+            "content": json.dumps(initial_context, indent=2)
+        })
+
     resp = client.chat.completions.create(
         model=MODEL,
         messages=messages,
@@ -59,36 +175,18 @@ def call_llm(messages: list[dict]) -> str:
 
 
 def run_task(task_id: str) -> float:
-    # Reset environment
     obs = requests.post(f"{ENV_URL}/reset", json={"task": task_id}, timeout=30).json()
     pipeline_name = obs.get("pipeline_name", task_id)
     print(f"[START] task={task_id} pipeline={pipeline_name}")
 
-    rewards = []
-    step    = 0
-    done    = False
+    rewards   = []
+    step      = 0
+    done      = False
     max_steps = {"easy": 4, "medium": 6, "hard": 8}.get(task_id, 8)
 
     while not done and step < max_steps:
-        # Build LLM prompt
-        user_content = json.dumps({
-            "pipeline_config":        obs["pipeline_config"],
-            "error_log":              obs["error_log"],
-            "sample_input_rows":      obs["sample_input_rows"],
-            "current_output_rows":    obs["current_output_rows"],
-            "expected_output_schema": obs["expected_output_schema"],
-            "comparison":             obs["comparison"],
-            "fix_attempts":           obs["fix_attempts"],
-            "step_number":            obs["step_number"],
-        }, indent=2)
-
-        messages = [
-            {"role": "system",  "content": SYSTEM_PROMPT},
-            {"role": "user",    "content": user_content},
-        ]
-
         try:
-            raw_action = call_llm(messages)
+            raw_action = call_llm(obs, obs.get("fix_attempts", []))
             action     = json.loads(raw_action)
         except Exception as e:
             print(f"[STEP] step={step+1} action=LLM_ERROR reward=0 done=False error={e}")
@@ -96,9 +194,8 @@ def run_task(task_id: str) -> float:
             step += 1
             continue
 
-        # Send action to environment
         try:
-            result  = requests.post(f"{ENV_URL}/step", json=action, timeout=30).json()
+            result = requests.post(f"{ENV_URL}/step", json=action, timeout=30).json()
         except Exception as e:
             print(f"[STEP] step={step+1} action=REQUEST_ERROR reward=0 done=False error={e}")
             rewards.append(0.0)
@@ -108,20 +205,22 @@ def run_task(task_id: str) -> float:
         obs    = result["observation"]
         reward = result["reward"]
         done   = result["done"]
-        error  = result.get("info", {}).get("pipeline_error") or result.get("info", {}).get("patch_error")
+        error  = (
+            result.get("info", {}).get("pipeline_error")
+            or result.get("info", {}).get("patch_error")
+        )
 
         action_summary = json.dumps({
-            "diagnosis":  action.get("diagnosis", "")[:60],
-            "patch":      action.get("patch"),
+            "diagnosis": action.get("diagnosis", "")[:70],
+            "patch":     action.get("patch"),
         })
         print(f"[STEP] step={step+1} action={action_summary} reward={reward} done={done} error={error}")
         rewards.append(reward)
         step += 1
 
-        time.sleep(0.5)   # be polite to the LLM API
+        time.sleep(0.5)
 
-    # Normalize score to [0, 1]
-    min_possible = max_steps * -0.20
+    min_possible  = max_steps * -0.20
     best_possible = 0.70
     raw_score = sum(rewards)
     score = round(min(1.0, max(0.0, (raw_score - min_possible) / (best_possible - min_possible))), 4)

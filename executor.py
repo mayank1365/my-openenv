@@ -111,7 +111,7 @@ def _apply_step(step: dict, rows: list[dict]) -> list[dict]:
                 elif null_handling == "drop":
                     pass
                 else:
-                    raise ValueError(f"Cannot cast {val!r} to {dtype} (null_handling=error)")
+                    raise ValueError(f"Cannot cast {val!r} to {dtype} (null_handling={null_handling!r}; valid values: error, coerce, drop)")
                 continue
             try:
                 out.append({**row, col: cast_fn(val)})
