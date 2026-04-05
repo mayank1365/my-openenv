@@ -4,7 +4,7 @@ inference.py — Baseline LLM agent for data-pipeline-repair.
 Usage:
   export API_BASE_URL=https://api.groq.com/openai/v1
   export MODEL_NAME=llama-3.1-8b-instant
-  export OPENAI_API_KEY=gsk_...      # Groq key (or any OpenAI-compat key)
+  export HF_TOKEN=gsk_...      # LLM API key (Groq, OpenAI, etc)
   export ENV_URL=https://hollow-abyss-data-pipeline-repair.hf.space
   python inference.py
 """
@@ -18,16 +18,19 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-API_BASE = os.environ.get("API_BASE_URL", "https://api.groq.com/openai/v1")
-MODEL    = os.environ.get("MODEL_NAME",   "llama-3.3-70b-versatile")
-ENV_URL  = os.environ.get("ENV_URL",     "https://hollow-abyss-data-pipeline-repair.hf.space")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
+MODEL_NAME = os.getenv("MODEL_NAME",   "llama-3.3-70b-versatile")
+HF_TOKEN = os.getenv("HF_TOKEN")
 
-API_KEY = os.environ.get("OPENAI_API_KEY")
+# Optional - if you use from_docker_image():
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
-if not API_KEY:
-    raise ValueError("OPENAI_API_KEY environment variable is not set. Please set it in your .env file.")
+ENV_URL  = os.getenv("ENV_URL", "https://hollow-abyss-data-pipeline-repair.hf.space")
 
-client = OpenAI(base_url=API_BASE, api_key=API_KEY)
+if not HF_TOKEN:
+    raise ValueError("HF_TOKEN environment variable is not set. Please set it in your .env file.")
+
+client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
 SYSTEM_PROMPT = """You are a data engineering agent. You debug broken ETL pipeline configs.
 
@@ -168,7 +171,7 @@ def call_llm(obs: dict, fix_attempts: list[dict]) -> str:
         })
 
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=MODEL_NAME,
         messages=messages,
         response_format={"type": "json_object"},
         temperature=0.0,

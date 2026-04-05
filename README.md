@@ -109,7 +109,7 @@ We include an `inference.py` loop which acts as a robust baseline LLM agent. It 
 1. **Copy the environment template**
    ```bash
    cp .env.example .env
-   # Update .env with your chosen LLM Key (e.g. OPENAI_API_KEY)
+   # Update .env with your chosen LLM Key (e.g. HF_TOKEN)
    ```
 2. **Execute the agent loop:**
    ```bash
