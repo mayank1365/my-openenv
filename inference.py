@@ -15,7 +15,7 @@ import requests
 from openai import OpenAI
 
 API_BASE = os.environ.get("API_BASE_URL", "https://api.groq.com/openai/v1")
-MODEL    = os.environ.get("MODEL_NAME",   "llama-3.1-8b-instant")
+MODEL    = os.environ.get("MODEL_NAME",   "llama-3.3-70b-versatile")
 ENV_URL  = os.environ.get("ENV_URL",     "https://hollow-abyss-data-pipeline-repair.hf.space")
 
 # Key fallback: OPENAI_API_KEY → HF_TOKEN → hardcoded Groq key
@@ -218,7 +218,7 @@ def run_task(task_id: str) -> float:
         rewards.append(reward)
         step += 1
 
-        time.sleep(0.5)
+        time.sleep(2.0)   # avoid Groq TPM rate limits with larger model
 
     min_possible  = max_steps * -0.20
     best_possible = 0.70
