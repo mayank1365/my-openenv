@@ -2,6 +2,10 @@
 app.py — FastAPI server exposing the data-pipeline-repair OpenEnv endpoints.
 """
 import copy
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from executor import run_pipeline, apply_patch, compare_output
@@ -215,3 +219,15 @@ def get_state():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+def main():
+    import uvicorn
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=7860)
+    parser.add_argument("--host", type=str, default="0.0.0.0")
+    args = parser.parse_args()
+    uvicorn.run("server.app:app", host=args.host, port=args.port)
+
+if __name__ == "__main__":
+    main()
