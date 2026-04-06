@@ -16,7 +16,7 @@ license: mit
 
 # 🔧 data-pipeline-repair-RL
 
-An [OpenEnv](https://github.com/openenv/openenv) environment where an LLM or Reinforcement Learning agent diagnoses and repairs broken ETL data pipelines. 
+An [OpenEnv](https://github.com/mayank1365/my-openenv) environment where an LLM or Reinforcement Learning agent diagnoses and repairs broken ETL data pipelines. 
 
 In this environment, an agent receives a broken pipeline configuration (JSON), input data rows, an expected output schema, and an error log. The agent interactively patches the pipeline step-by-step using structural mutations, validating its changes against a pure-Python embedded execution engine.
 
@@ -196,8 +196,8 @@ This environment is pre-configured to deploy seamlessly to Hugging Face Spaces u
 
 ## Links
 
-- **HF Space (live):** [huggingface.co/spaces/Hollow-Abyss/data-pipeline-repair](https://huggingface.co/spaces/Hollow-Abyss/data-pipeline-repair)
-- **Swagger UI:** [hollow-abyss-data-pipeline-repair.hf.space/docs](https://hollow-abyss-data-pipeline-repair.hf.space/docs)
-- **GitHub:** [github.com/mayank1365/data-pipeline-repair-RL](https://github.com/mayank1365/data-pipeline-repair-RL)
+- **HF Space (live):** [huggingface.co/spaces/Hollow-Abyss/my-env](https://huggingface.co/spaces/Hollow-Abyss/my-env)
+- **Swagger UI:** [huggingface.co/spaces/Hollow-Abyss/my-env/docs](https://huggingface.co/spaces/Hollow-Abyss/my-env/docs)
+- **GitHub:** [github.com/mayank1365/my-openenv](https://github.com/mayank1365/my-openenv)
 
 ---

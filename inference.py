@@ -5,7 +5,7 @@ Usage:
   export API_BASE_URL=https://api.groq.com/openai/v1
   export MODEL_NAME=llama-3.1-8b-instant
   export HF_TOKEN=gsk_...      # LLM API key (Groq, OpenAI, etc)
-  export ENV_URL=https://hollow-abyss-data-pipeline-repair.hf.space
+  export ENV_URL=https://hollow-abyss-my-env.hf.space
   python inference.py
 """
 import os
@@ -25,7 +25,7 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 # Optional - if you use from_docker_image():
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
-ENV_URL  = os.getenv("ENV_URL", "https://hollow-abyss-data-pipeline-repair.hf.space")
+ENV_URL  = os.getenv("ENV_URL", "https://hollow-abyss-my-env.hf.space")
 
 if not HF_TOKEN:
     raise ValueError("HF_TOKEN environment variable is not set. Please set it in your .env file.")
