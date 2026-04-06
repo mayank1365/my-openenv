@@ -16,62 +16,106 @@ license: mit
 
 # 🔧 data-pipeline-repair-RL
 
-An [OpenEnv](https://github.com/openenv/openenv) environment where an LLM or Reinforcement Learning agent diagnoses and repairs broken ETL data pipelines.
+An [OpenEnv](https://github.com/openenv/openenv) environment where an LLM or Reinforcement Learning agent diagnoses and repairs broken ETL data pipelines. 
 
-In this environment, an agent is given a broken pipeline configuration (JSON), input data rows, an expected output schema, and an error log. The agent must interactively patch the pipeline step-by-step using structural mutations, validating its changes against a pure-Python embedded execution engine.
+In this environment, an agent receives a broken pipeline configuration (JSON), input data rows, an expected output schema, and an error log. The agent interactively patches the pipeline step-by-step using structural mutations, validating its changes against a pure-Python embedded execution engine.
 
----
-
-## 🏗️ Repository Architecture
-
-The repository is modularized into distinct components, keeping environment execution entirely decoupled from the REST API layer:
-
-| Component | Responsibility |
-|---|---|
-| [`executor.py`](./executor.py) | A pure-Python ETL interpreter (no pandas/numpy required). Implements operations like `cast`, `select`, `rename`, `filter`, `date_parse`, `join`, and `agg`. |
-| [`tasks.py`](./tasks.py) | Definitive set of deterministic tasks (Easy, Medium, Hard). Includes the broken configs, inputs, expected states, and "gold" solutions. |
-| [`grader.py`](./grader.py) | Reward computation engine. Grades the agent at each step based on schema fix, row matches, exact root cause keyword detection, and penalizes bad patches. |
-| [`app.py`](./app.py) | FastAPI service wrapping the execution environment into the `/reset`, `/step`, and `/state` interaction loops compliant with OpenEnv constraints. |
-| [`inference.py`](./inference.py) | The baseline agent script implementing an LLM loop reacting to OpenEnv API observations. By default uses `llama-3.3-70b-versatile`. |
-| [`openenv.yaml`](./openenv.yaml) | Standardized metadata for LLM evaluation declaring observation schemas, action schemas, and reward structures. |
+### Features
+- **Deterministic Tasks**: Pre-configured Easy, Medium, and Hard data pipeline scenarios.
+- **Embedded pure-Python Engine**: Executes ETL operations (`cast`, `join`, `agg`, etc.) with zero external data dependencies like Pandas or Numpy.
+- **OpenEnv Compliant REST API**: Exposes standardized `/reset`, `/step`, and `/state` validation loops.
+- **Strict Grading System**: Evaluates and rewards fixes based on root cause identification and exact row array matches.
+- **Pre-built Baseline Agent**: Includes an agent framework (`inference.py`) with anti-oscillation behavior and multi-turn logic.
 
 ---
 
-## 🎯 Task Scenarios
+## Getting Started
 
-| Difficulty | Description | Max Steps | Success Threshold |
-|---|---|:---:|:---:|
-| **Easy** | **Explicit Type Error**: The pipeline crashes with a `ValueError` when casting missing values. The agent must locate the cast step and switch `null_handling` from "error" to "coerce". | 4 | 0.80 |
-| **Medium** | **Upstream Keys Dropped**: An upstream `select` step silently drops a column needed by a downstream `agg` step. The agent must trace the error log back through the pipeline graph to find the root cause. | 6 | 0.75 |
-| **Hard** | **Silent Bugs + State Bleed**: The pipeline completes but outputs incorrect data. Bug 1: Improper date format drops all timestamp elements. Bug 2: Duplicate join keys inflate sum aggregations. Two sequential patches are required. | 8 | 0.70 |
+### Prerequisites
+- Python 3.10+
+- Docker (Optional, for containerized execution)
+- API Keys for the LLM inference engine (e.g., Groq, OpenAI).
+
+### Installation
+
+**Option A: Virtual Environment (Local Python)**
+1. Clone the repository and navigate into it.
+2. Initialize a virtual environment:
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+**Option B: Docker**
+1. Build the image:
+   ```bash
+   docker build -t pipeline-repair .
+   ```
 
 ---
 
-## 🚀 Quickstart: Running Locally
+## Configuration
 
-You can run the environment natively or via Docker. The application uses port `7860` locally.
+The baseline agent requires authentication tokens for the LLM execution. 
 
-### Option A: Docker (Recommended)
+1. Copy the example environment file:
+   ```bash
+   cp .env.example .env
+   ```
+2. Open `.env` and configure your keys:
+   ```env
+   API_BASE_URL=https://api.groq.com/openai/v1
+   MODEL_NAME=llama-3.3-70b-versatile
+   HF_TOKEN=your_api_key_here
+   ENV_URL=http://localhost:7860
+   ```
+
+---
+
+## Usage
+
+### Running Locally
+To launch the OpenEnv simulation server natively:
 ```bash
-docker build -t pipeline-repair .
+uvicorn app:app --host 0.0.0.0 --port 7860
+```
+Verify the server is running by viewing the landing page at `http://localhost:7860`.
+
+### Running with Docker
+```bash
 docker run -p 7860:7860 pipeline-repair
 ```
 
-### Option B: Local Python Virtual Environment
+### Running the LLM Agent
+Once the environment server is running, execute the baseline agent to attempt the repairs automatically:
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app:app --host 0.0.0.0 --port 7860
+python inference.py
 ```
-
-Verify it's running by hitting the healthcheck or observing the landing page at `http://localhost:7860`.
 
 ---
 
-## 🕹️ Interaction API (OpenEnv Compliant)
+## Architecture / Design
 
-### 1. Reset Environment (`POST /reset`)
+The repository is highly modularized, separating environment execution mechanics from the REST API boundary:
+
+- **`executor.py`**: Pure-Python ETL interpreter. Evaluates the pipeline logic and processes the rows based on the JSON configs.
+- **`tasks.py`**: Source of truth for task scenarios. Contains broken configs, inputs, expected states, and "gold" solutions.
+- **`grader.py`**: Reward engine. Analyzes the delta between the expected output and current output to distribute rewards or penalties.
+- **`app.py`**: FastAPI wrapper managing session states and routing.
+- **`inference.py`**: The baseline LLM agent loop that dynamically interacts with the `/reset` and `/step` endpoints.
+- **`openenv.yaml`**: Standardized metadata declaring action schemas, observation schemas, and task outlines.
+
+---
+
+## API / Endpoints
+
+The environment adheres to the strict OpenEnv interaction methodology.
+
+### 1. `POST /reset`
 Initialize a task scenario.
 ```bash
 curl -X POST http://localhost:7860/reset \
@@ -79,8 +123,8 @@ curl -X POST http://localhost:7860/reset \
   -d '{"task":"easy"}'
 ```
 
-### 2. Step Environment (`POST /step`)
-Provide a diagnosis and a JSON patch payload modifying the pipeline definition.
+### 2. `POST /step`
+Submit a diagnosis and a JSON patch payload modifying the current pipeline definition.
 ```bash
 curl -X POST http://localhost:7860/step \
   -H "Content-Type: application/json" \
@@ -94,60 +138,66 @@ curl -X POST http://localhost:7860/step \
       }'
 ```
 
-### 3. Check State (`GET /state`)
-Retrieve cumulative reward stats, step depths, task status.
+### 3. `GET /state`
+Retrieve cumulative metadata including reward tracking, depth, and success status.
 ```bash
 curl http://localhost:7860/state
 ```
 
 ---
 
-## 🧠 Running the Baseline Agent
+## Tasks / Scenarios
 
-We include an `inference.py` loop which acts as a robust baseline LLM agent. It features anti-oscillation behavior, history interleaving for multi-turn learning, and intelligent fallback on keys.
+| Difficulty | Description | Max Steps | Success Threshold |
+|---|---|:---:|:---:|
+| **Easy** | **Explicit Type Error**: The pipeline crashes with a `ValueError` when casting missing values. Patch `null_handling` to `coerce`. | 4 | 0.80 |
+| **Medium** | **Upstream Keys Dropped**: An upstream `select` step drops a column needed downstream. Find the root step and include the column. | 6 | 0.75 |
+| **Hard** | **Silent Bugs**: Pipeline completes but data is wrong. Requires fixing broken date strings and joining duplicate deduplication parameters. | 8 | 0.70 |
 
-1. **Copy the environment template**
+---
+
+## Testing / Validation
+
+To independently verify that the environment conforms to the strict OpenEnv evaluation specs:
+
+1. Install the CLI validator:
    ```bash
-   cp .env.example .env
-   # Update .env with your chosen LLM Key (e.g. HF_TOKEN)
+   pip install openenv-cli
    ```
-2. **Execute the agent loop:**
+2. Validate against a local or remote environment:
    ```bash
-   python inference.py
+   python -m openenv validate http://localhost:7860
    ```
 
-A benchmark run across all modes (Easy, Medium, Hard) will output its final normalized percentage score matrix based on the reward engine evaluation.
+### Benchmark Reference
+Scores achieved using `llama-3.3-70b-versatile`:
+- Easy: 0.77 (Solved 1 step)
+- Medium: 0.82
+- Hard: 0.96 
+- **Mean: 0.85**
 
 ---
 
-## ✅ OpenEnv Validation
+## Deployment 
 
-To confirm the Space is compliant with the OpenEnv spec:
+This environment is pre-configured to deploy seamlessly to Hugging Face Spaces using the Docker SDK.
 
-```bash
-pip install openenv-cli
-python -m openenv validate https://hollow-abyss-data-pipeline-repair.hf.space
-```
+1. Ensure `app_port: 7860` and `sdk: docker` are present in the repository's Markdown Frontmatter.
+2. Push your code directly to the underlying Git infrastructure of your Hugging Face Space. The Docker build will trigger automatically.
 
 ---
 
-## 📊 Baseline Benchmark Results
+## Troubleshooting / FAQ
 
-Scores achieved by the `llama-3.3-70b-versatile` baseline agent:
-
-| Task | Score | Threshold | Result |
-|---|:---:|:---:|:---:|
-| Easy | 0.77 | 0.80 | ✅ Solved in 1 step |
-| Medium | 0.82 | 0.75 | ✅ |
-| Hard | 0.96 | 0.70 | ✅ |
-| **Mean** | **0.85** | — | ✅ |
-
-> The Easy score is slightly below 0.80 due to score normalization across 4 budget steps, even though it's solved perfectly in 1 step.
+- **Agent rate limits**: If you encounter 429 status codes during the `inference.py` loop, increase the `time.sleep()` parameter inside the `inference.py` execution block.
+- **Port conflicts**: If port 7860 is taken locally, alter the Uvicorn port binding (`--port 8000`), but ensure you update the `ENV_URL` in `.env` to match. 
 
 ---
 
-## 🔗 Links
+## Links
 
 - **HF Space (live):** [huggingface.co/spaces/Hollow-Abyss/data-pipeline-repair](https://huggingface.co/spaces/Hollow-Abyss/data-pipeline-repair)
 - **Swagger UI:** [hollow-abyss-data-pipeline-repair.hf.space/docs](https://hollow-abyss-data-pipeline-repair.hf.space/docs)
 - **GitHub:** [github.com/mayank1365/data-pipeline-repair-RL](https://github.com/mayank1365/data-pipeline-repair-RL)
+
+---
