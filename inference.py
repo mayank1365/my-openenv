@@ -30,7 +30,13 @@ ENV_URL  = os.getenv("ENV_URL", "https://hollow-abyss-my-env.hf.space")
 if not HF_TOKEN:
     raise ValueError("HF_TOKEN environment variable is not set. Please set it in your .env file.")
 
-client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+_client = None
+
+def get_client() -> OpenAI:
+    global _client
+    if _client is None:
+        _client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+    return _client
 
 SYSTEM_PROMPT = """You are a data engineering agent. You debug broken ETL pipeline configs.
 
@@ -170,6 +176,7 @@ def call_llm(obs: dict, fix_attempts: list[dict]) -> str:
             "content": json.dumps(initial_context, indent=2)
         })
 
+    client = get_client()
     resp = client.chat.completions.create(
         model=MODEL_NAME,
         messages=messages,
@@ -180,7 +187,14 @@ def call_llm(obs: dict, fix_attempts: list[dict]) -> str:
 
 
 def run_task(task_id: str) -> float:
-    obs = requests.post(f"{ENV_URL}/reset", json={"task": task_id}, timeout=30).json()
+    try:
+        resp = requests.post(f"{ENV_URL}/reset", json={"task": task_id}, timeout=30)
+        resp.raise_for_status()
+        obs = resp.json()
+    except Exception as e:
+        print(f"[START_ERROR] Failed to reset task={task_id}: {e}")
+        return 0.0
+
     pipeline_name = obs.get("pipeline_name", task_id)
     print(f"[START] task={task_id} pipeline={pipeline_name}")
 
@@ -238,7 +252,11 @@ def run_task(task_id: str) -> float:
 if __name__ == "__main__":
     all_scores = {}
     for task_id in ["easy", "medium", "hard"]:
-        score = run_task(task_id)
+        try:
+            score = run_task(task_id)
+        except Exception as e:
+            print(f"[FATAL_TASK_ERROR] task={task_id} error={e}")
+            score = 0.0
         all_scores[task_id] = score
         time.sleep(3)
 
