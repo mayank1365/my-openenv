@@ -59,6 +59,8 @@ def get_client() -> OpenAI:
 
 # ── Stdout logging helpers ────────────────────────────────────────────────────
 def log_start(task: str) -> None:
+    # Versioned heartbeat to verify deployment freshness in validator logs
+    print(f"DEBUG: Agent Version 2026-04-08-1456", flush=True)
     print(f"[START] task={task} env={BENCHMARK} model={MODEL_NAME}", flush=True)
 
 
