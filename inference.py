@@ -23,6 +23,7 @@ from openai import OpenAI
 
 # ── Environment variables ─────────────────────────────────────────────────────
 # Validator injects API_BASE_URL, API_KEY, and MODEL_NAME.
+# Mandatory for the LiteLLM proxy required in Phase 2.
 MODEL_NAME   = os.getenv("MODEL_NAME")   or "llama-3.3-70b-versatile"
 ENV_URL      = os.getenv("ENV_URL")      or "https://hollow-abyss-my-env.hf.space"
 BENCHMARK    = "data-pipeline-repair"
@@ -31,27 +32,27 @@ BENCHMARK    = "data-pipeline-repair"
 _client = None
 
 def get_client() -> OpenAI:
-    """Lazily initialize the OpenAI client to avoid top-level crashes."""
+    """Lazily initialize the OpenAI client with strict proxy parameters."""
     global _client
     if _client is not None:
         return _client
 
-    # Strip and validate environment variables
-    base_url = (os.getenv("API_BASE_URL") or "").strip() or "https://api.groq.com/openai/v1"
-    api_key  = (os.getenv("API_KEY")      or os.getenv("HF_TOKEN") or "").strip()
-
-    if not api_key:
-        raise EnvironmentError(
-            "No API key found. Set API_KEY (injected by validator) "
-            "or HF_TOKEN for local development."
-        )
-
     try:
+        # MANDATORY: These must be injected by the validator for proxy logging.
+        # Using os.environ[] directly to ensure failure if bypassed/missing.
+        base_url = os.environ["API_BASE_URL"]
+        api_key  = os.environ["API_KEY"]
+        
         _client = OpenAI(base_url=base_url, api_key=api_key)
         return _client
+    except KeyError as e:
+        raise EnvironmentError(
+            f"Missing mandatory environment variable: {e}. "
+            "Validator must inject API_BASE_URL and API_KEY for proxy compliance."
+        )
     except Exception as e:
-        # Re-raise so it's caught by the task runner's try/except
-        raise RuntimeError(f"Failed to initialize OpenAI client (base_url={base_url!r}): {e}") from e
+        # Caught by task runner's try/except block
+        raise RuntimeError(f"Failed to initialize OpenAI client (proxy): {e}")
 
 
 
