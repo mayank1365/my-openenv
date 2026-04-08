@@ -1,77 +1,77 @@
 """
 inference.py — Baseline LLM agent for data-pipeline-repair.
 
-Usage:
-  export API_BASE_URL=https://api.groq.com/openai/v1   # injected by hackathon validator
-  export API_KEY=<proxy-key>                            # injected by hackathon validator
-  export MODEL_NAME=llama-3.3-70b-versatile
-  export ENV_URL=https://hollow-abyss-my-env.hf.space
-  python inference.py
+MANDATORY environment variables (injected by hackathon validator):
+  API_BASE_URL   — LiteLLM proxy endpoint
+  API_KEY        — LiteLLM proxy key
+  MODEL_NAME     — model identifier (default: llama-3.3-70b-versatile)
 
-NOTE: API_BASE_URL and API_KEY are injected by the hackathon LiteLLM proxy.
-      API_KEY takes priority; HF_TOKEN is accepted as a local-dev fallback.
-      load_dotenv(override=False) ensures injected env vars always take
-      priority over any values in a local .env file.
+For local development only:
+  HF_TOKEN       — fallback when API_KEY is not set
+  ENV_URL        — environment server URL
+
+STDOUT FORMAT (strictly required by validator):
+  [START] task=<task_name> env=<benchmark> model=<model_name>
+  [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
+  [END]   success=<true|false> steps=<n> score=<0.00> rewards=<r1,r2,...>
 """
 import os
 import json
 import time
 import requests
 from openai import OpenAI
-from dotenv import load_dotenv
 
-# Load .env ONLY as a fallback — override=False means env vars that are
-# already set (injected by the hackathon validator) are NEVER overwritten.
-load_dotenv(override=False)
+# ── Environment variables ─────────────────────────────────────────────────────
+# Validator injects API_BASE_URL and API_KEY. HF_TOKEN is local-dev fallback.
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://api.groq.com/openai/v1"
+MODEL_NAME   = os.getenv("MODEL_NAME")   or "llama-3.3-70b-versatile"
+API_KEY      = os.getenv("API_KEY")      or os.getenv("HF_TOKEN")
+ENV_URL      = os.getenv("ENV_URL")      or "https://hollow-abyss-my-env.hf.space"
+BENCHMARK    = "data-pipeline-repair"
 
-# Checklist-required variable names and defaults:
-#   API_BASE_URL — has a sensible default
-#   MODEL_NAME   — has a sensible default
-#   API_KEY      — injected by validator; no default. HF_TOKEN accepted as local-dev fallback.
-API_BASE_URL     = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
-MODEL_NAME       = os.getenv("MODEL_NAME",   "llama-3.3-70b-versatile")
-# Validator injects API_KEY; HF_TOKEN is the local-dev fallback — never hardcode.
-API_KEY          = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
+# ── OpenAI client ─────────────────────────────────────────────────────────────
+# Primary path: use injected vars via os.environ[] (validator requirement).
+# Fallback: use os.getenv() for local dev when API_KEY comes via HF_TOKEN.
+try:
+    client = OpenAI(
+        base_url=os.environ["API_BASE_URL"],
+        api_key=os.environ["API_KEY"],
+    )
+except KeyError:
+    # Local dev: API_KEY not set, HF_TOKEN used as fallback
+    if not API_KEY:
+        raise EnvironmentError(
+            "No API key found. Set API_KEY (injected by validator) "
+            "or HF_TOKEN for local development."
+        )
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-# Optional - if you use from_docker_image():
-LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
-ENV_URL = os.getenv("ENV_URL", "https://hollow-abyss-my-env.hf.space")
+# ── Stdout logging helpers ────────────────────────────────────────────────────
+def log_start(task: str) -> None:
+    print(f"[START] task={task} env={BENCHMARK} model={MODEL_NAME}", flush=True)
 
-_client = None
 
-def get_client() -> OpenAI:
-    """Return a cached OpenAI client using API_BASE_URL and API_KEY.
+def log_step(step: int, action: str, reward: float, done: bool, error) -> None:
+    error_val = error if error else "null"
+    done_val  = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} "
+        f"done={done_val} error={error_val}",
+        flush=True,
+    )
 
-    The hackathon validator injects API_BASE_URL and API_KEY at runtime via
-    LiteLLM, and explicitly checks for this instantiation signature.
-    HF_TOKEN is accepted as a local-dev fallback only.
-    """
-    global _client
-    if _client is None:
-        try:
-            # Validator requirement: strict initialization from os.environ
-            _client = OpenAI(
-                base_url=os.environ["API_BASE_URL"],
-                api_key=os.environ["API_KEY"]
-            )
-        except KeyError:
-            # Local-dev fallback
-            base_url = os.environ.get("API_BASE_URL", API_BASE_URL)
-            api_key  = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
-            
-            if not api_key:
-                raise ValueError(
-                    "No API key found. Validator must inject API_KEY, "
-                    "or set HF_TOKEN for local development."
-                )
 
-            _client = OpenAI(
-                base_url=base_url,
-                api_key=api_key,
-            )
-    return _client
+def log_end(success: bool, steps: int, score: float, rewards: list) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} "
+        f"score={score:.2f} rewards={rewards_str}",
+        flush=True,
+    )
 
+
+# ── System prompt ─────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """You are a data engineering agent. You debug broken ETL pipeline configs.
 
 At each step you receive a JSON observation and must respond with exactly ONE JSON object.
@@ -139,22 +139,17 @@ When error_log is empty and row_match < 1.0 after a patch:
 Respond ONLY with valid JSON. No markdown, no explanations outside the JSON."""
 
 
-def _build_history(fix_attempts: list[dict]) -> list[dict]:
-    """
-    Convert fix_attempts into alternating user/assistant messages
-    so the model has real memory of what it tried and what happened.
-    """
+# ── Conversation history builder ───────────────────────────────────────────────
+def _build_history(fix_attempts: list) -> list:
     messages = []
     for attempt in fix_attempts:
-        # Reconstruct what the agent sent
         action = {
             "diagnosis": attempt.get("diagnosis", ""),
             "patch":     attempt.get("patch"),
         }
         messages.append({"role": "assistant", "content": json.dumps(action)})
-        # Summarize the result as a system-style feedback message
         feedback = {
-            "result": "patch_applied" if attempt.get("patch") else "validate_only",
+            "result":         "patch_applied" if attempt.get("patch") else "validate_only",
             "row_match_after": attempt.get("row_match", 0.0),
             "reward":          attempt.get("reward", 0.0),
             "note": (
@@ -166,9 +161,8 @@ def _build_history(fix_attempts: list[dict]) -> list[dict]:
     return messages
 
 
-def call_llm(obs: dict, fix_attempts: list[dict]) -> str:
-    """Build a multi-turn conversation and call the LLM."""
-    # Initial observation (the full context)
+# ── LLM call ──────────────────────────────────────────────────────────────────
+def call_llm(obs: dict, fix_attempts: list) -> str:
     initial_context = {
         "pipeline_config":        obs["pipeline_config"],
         "error_log":              obs["error_log"],
@@ -182,16 +176,13 @@ def call_llm(obs: dict, fix_attempts: list[dict]) -> str:
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     if fix_attempts:
-        # First message: initial broken state
         messages.append({
-            "role": "user",
+            "role":    "user",
             "content": json.dumps(initial_context) + "\n\n[No patches applied yet. Diagnose the bug.]"
         })
-        # Interleave history of (action → result) pairs
         messages.extend(_build_history(fix_attempts))
-        # Final user message: current state after all patches
         messages.append({
-            "role": "user",
+            "role":    "user",
             "content": (
                 f"Current state after {len(fix_attempts)} attempt(s):\n"
                 + json.dumps({
@@ -204,13 +195,11 @@ def call_llm(obs: dict, fix_attempts: list[dict]) -> str:
             )
         })
     else:
-        # First step — just the raw observation
         messages.append({
-            "role": "user",
+            "role":    "user",
             "content": json.dumps(initial_context, indent=2)
         })
 
-    client = get_client()
     resp = client.chat.completions.create(
         model=MODEL_NAME,
         messages=messages,
@@ -220,17 +209,20 @@ def call_llm(obs: dict, fix_attempts: list[dict]) -> str:
     return resp.choices[0].message.content
 
 
+# ── Task runner ────────────────────────────────────────────────────────────────
 def run_task(task_id: str) -> float:
+    # Reset environment
     try:
         resp = requests.post(f"{ENV_URL}/reset", json={"task": task_id}, timeout=30)
         resp.raise_for_status()
         obs = resp.json()
     except Exception as e:
-        print(f"[START_ERROR] Failed to reset task={task_id}: {e}")
+        print(f"[START_ERROR] Failed to reset task={task_id}: {e}", flush=True)
+        log_start(task_id)
+        log_end(success=False, steps=0, score=0.0, rewards=[])
         return 0.0
 
-    pipeline_name = obs.get("pipeline_name", task_id)
-    print(f"[START] task={task_id} pipeline={pipeline_name}")
+    log_start(task_id)
 
     rewards   = []
     step      = 0
@@ -238,19 +230,22 @@ def run_task(task_id: str) -> float:
     max_steps = {"easy": 4, "medium": 6, "hard": 8}.get(task_id, 8)
 
     while not done and step < max_steps:
+        # Call LLM
         try:
             raw_action = call_llm(obs, obs.get("fix_attempts", []))
             action     = json.loads(raw_action)
         except Exception as e:
-            print(f"[STEP] step={step+1} action=LLM_ERROR reward=0 done=False error={e}")
+            action_str = "LLM_ERROR"
+            log_step(step + 1, action_str, 0.0, False, str(e))
             rewards.append(0.0)
             step += 1
             continue
 
+        # Step environment
         try:
             result = requests.post(f"{ENV_URL}/step", json=action, timeout=30).json()
         except Exception as e:
-            print(f"[STEP] step={step+1} action=REQUEST_ERROR reward=0 done=False error={e}")
+            log_step(step + 1, "REQUEST_ERROR", 0.0, False, str(e))
             rewards.append(0.0)
             step += 1
             continue
@@ -263,58 +258,41 @@ def run_task(task_id: str) -> float:
             or result.get("info", {}).get("patch_error")
         )
 
-        action_summary = json.dumps({
+        action_str = json.dumps({
             "diagnosis": action.get("diagnosis", "")[:70],
             "patch":     action.get("patch"),
         })
-        print(f"[STEP] step={step+1} action={action_summary} reward={reward} done={done} error={error}")
+
+        log_step(step + 1, action_str, reward, done, error)
         rewards.append(reward)
         step += 1
-
         time.sleep(0.5)
 
+    # Normalise score to [0, 1]
     min_possible  = max_steps * -0.20
     best_possible = 0.70
     raw_score = sum(rewards)
     score = round(min(1.0, max(0.0, (raw_score - min_possible) / (best_possible - min_possible))), 4)
     success = score >= {"easy": 0.80, "medium": 0.75, "hard": 0.70}.get(task_id, 0.70)
 
-    print(f"[END] success={success} steps={step} score={score} rewards={rewards}")
+    log_end(success=success, steps=step, score=score, rewards=rewards)
     return score
 
 
+# ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     all_scores = {}
     for task_id in ["easy", "medium", "hard"]:
         try:
             score = run_task(task_id)
         except Exception as e:
-            print(f"[FATAL_TASK_ERROR] task={task_id} error={e}")
+            print(f"[FATAL_TASK_ERROR] task={task_id} error={e}", flush=True)
             score = 0.0
         all_scores[task_id] = score
         time.sleep(3)
 
     mean_score = round(sum(all_scores.values()) / len(all_scores), 4)
-    print(f"\n=== FINAL SCORES ===")
+    print(f"\n=== FINAL SCORES ===", flush=True)
     for k, v in all_scores.items():
-        print(f"  {k}: {v}")
-    print(f"  mean: {mean_score}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        print(f"  {k}: {v}", flush=True)
+    print(f"  mean: {mean_score}", flush=True)
