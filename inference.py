@@ -22,29 +22,37 @@ import requests
 from openai import OpenAI
 
 # ── Environment variables ─────────────────────────────────────────────────────
-# Validator injects API_BASE_URL and API_KEY. HF_TOKEN is local-dev fallback.
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://api.groq.com/openai/v1"
+# Validator injects API_BASE_URL, API_KEY, and MODEL_NAME.
 MODEL_NAME   = os.getenv("MODEL_NAME")   or "llama-3.3-70b-versatile"
-API_KEY      = os.getenv("API_KEY")      or os.getenv("HF_TOKEN")
 ENV_URL      = os.getenv("ENV_URL")      or "https://hollow-abyss-my-env.hf.space"
 BENCHMARK    = "data-pipeline-repair"
 
-# ── OpenAI client ─────────────────────────────────────────────────────────────
-# Validator injects API_BASE_URL and API_KEY; HF_TOKEN is local-dev fallback.
-# Use os.getenv() (never os.environ[]) to avoid KeyError on missing vars.
-if not API_KEY:
-    raise EnvironmentError(
-        "No API key found. Set API_KEY (injected by validator) "
-        "or HF_TOKEN for local development."
-    )
+# ── OpenAI client (lazy init) ──────────────────────────────────────────────────
+_client = None
 
-try:
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-except Exception as _client_err:
-    raise RuntimeError(
-        f"Failed to initialise OpenAI client "
-        f"(base_url={API_BASE_URL!r}): {_client_err}"
-    ) from _client_err
+def get_client() -> OpenAI:
+    """Lazily initialize the OpenAI client to avoid top-level crashes."""
+    global _client
+    if _client is not None:
+        return _client
+
+    # Strip and validate environment variables
+    base_url = (os.getenv("API_BASE_URL") or "").strip() or "https://api.groq.com/openai/v1"
+    api_key  = (os.getenv("API_KEY")      or os.getenv("HF_TOKEN") or "").strip()
+
+    if not api_key:
+        raise EnvironmentError(
+            "No API key found. Set API_KEY (injected by validator) "
+            "or HF_TOKEN for local development."
+        )
+
+    try:
+        _client = OpenAI(base_url=base_url, api_key=api_key)
+        return _client
+    except Exception as e:
+        # Re-raise so it's caught by the task runner's try/except
+        raise RuntimeError(f"Failed to initialize OpenAI client (base_url={base_url!r}): {e}") from e
+
 
 
 # ── Stdout logging helpers ────────────────────────────────────────────────────
@@ -200,7 +208,7 @@ def call_llm(obs: dict, fix_attempts: list) -> str:
             "content": json.dumps(initial_context, indent=2)
         })
 
-    resp = client.chat.completions.create(
+    resp = get_client().chat.completions.create(
         model=MODEL_NAME,
         messages=messages,
         response_format={"type": "json_object"},
