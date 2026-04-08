@@ -2,11 +2,15 @@
 inference.py — Baseline LLM agent for data-pipeline-repair.
 
 Usage:
-  export API_BASE_URL=https://api.groq.com/openai/v1
-  export MODEL_NAME=llama-3.1-8b-instant
-  export HF_TOKEN=gsk_...      # LLM API key (Groq, OpenAI, etc)
+  export API_BASE_URL=https://api.groq.com/openai/v1   # injected by hackathon validator
+  export API_KEY=<proxy-key>                            # injected by hackathon validator
+  export MODEL_NAME=llama-3.3-70b-versatile
   export ENV_URL=https://hollow-abyss-my-env.hf.space
   python inference.py
+
+NOTE: API_BASE_URL and API_KEY are injected by the hackathon LiteLLM proxy.
+      Never hardcode these values — load_dotenv(override=False) ensures env vars
+      set by the validator always take priority over any local .env file.
 """
 import os
 import json
@@ -15,31 +19,44 @@ import requests
 from openai import OpenAI
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Load .env file ONLY as fallback — override=False ensures any env vars already
+# set in the environment (e.g. injected by the hackathon validator) are NEVER
+# overwritten by values from the local .env file.
+load_dotenv(override=False)
 
+# API_BASE_URL and API_KEY are injected by the hackathon's LiteLLM proxy.
+# We read them from os.environ so the validator's values always win.
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.groq.com/openai/v1")
-MODEL_NAME = os.environ.get("MODEL_NAME", "llama-3.3-70b-versatile")
-API_KEY = os.environ.get("API_KEY", os.environ.get("HF_TOKEN"))
+MODEL_NAME   = os.environ.get("MODEL_NAME",   "llama-3.3-70b-versatile")
+API_KEY       = os.environ.get("API_KEY")       # must come from the injected proxy key
 
 # Optional - if you use from_docker_image():
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
-ENV_URL  = os.environ.get("ENV_URL", "https://hollow-abyss-my-env.hf.space")
+ENV_URL = os.environ.get("ENV_URL", "https://hollow-abyss-my-env.hf.space")
 
 _client = None
 
 def get_client() -> OpenAI:
+    """Return a cached OpenAI client pointed at API_BASE_URL with API_KEY.
+
+    During hackathon validation these two env vars are injected by the
+    LiteLLM proxy — we must use them exactly as provided so the proxy
+    can record that the key was active.
+    """
     global _client
     if _client is None:
-        if "API_BASE_URL" not in os.environ:
-            os.environ["API_BASE_URL"] = API_BASE_URL
-        if "API_KEY" not in os.environ:
-            os.environ["API_KEY"] = API_KEY or ""
+        base_url = os.environ.get("API_BASE_URL", API_BASE_URL)
+        api_key  = os.environ.get("API_KEY", API_KEY or "")
+
+        if not base_url:
+            raise ValueError("API_BASE_URL is not set")
+        if not api_key:
+            raise ValueError("API_KEY is not set — the hackathon proxy must inject this")
 
         _client = OpenAI(
-            base_url=os.environ["API_BASE_URL"],
-            api_key=os.environ["API_KEY"]
+            base_url=base_url,
+            api_key=api_key,
         )
     return _client
 

@@ -5,3 +5,7 @@ __pycache__/
 .git/
 .gitignore
 *.md
+# Never bake local credentials into the image —
+# the hackathon validator injects API_BASE_URL and API_KEY at runtime
+.env
+.env.*
