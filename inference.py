@@ -133,54 +133,50 @@ def _build_history(fix_attempts: list) -> list:
 
 # ── LLM call ──────────────────────────────────────────────────────────────────
 def call_llm(obs: dict, fix_attempts: list) -> str:
+    import requests
+
+    base_url = os.environ["API_BASE_URL"].strip()
+    api_key  = os.environ["API_KEY"].strip()
+
+    url = f"{base_url}/chat/completions"
+
     initial_context = {
-        "pipeline_config":        obs["pipeline_config"],
-        "error_log":              obs["error_log"],
-        "sample_input_rows":      obs["sample_input_rows"],
-        "current_output_rows":    obs["current_output_rows"],
+        "pipeline_config": obs["pipeline_config"],
+        "error_log": obs["error_log"],
+        "sample_input_rows": obs["sample_input_rows"],
+        "current_output_rows": obs["current_output_rows"],
         "expected_output_schema": obs["expected_output_schema"],
-        "comparison":             obs["comparison"],
-        "step_number":            obs["step_number"],
+        "comparison": obs["comparison"],
+        "step_number": obs["step_number"],
     }
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": json.dumps(initial_context)}
+    ]
 
-    if fix_attempts:
-        messages.append({
-            "role": "user",
-            "content": json.dumps(initial_context) + "\n\n[No patches applied yet. Diagnose the bug.]"
-        })
-        messages.extend(_build_history(fix_attempts))
-        messages.append({
-            "role": "user",
-            "content": (
-                f"Current state after {len(fix_attempts)} attempt(s):\n"
-                + json.dumps({
-                    "pipeline_config": obs["pipeline_config"],
-                    "error_log": obs["error_log"],
-                    "current_output_rows": obs["current_output_rows"],
-                    "comparison": obs["comparison"],
-                }, indent=2)
-            )
-        })
-    else:
-        messages.append({
-            "role": "user",
-            "content": json.dumps(initial_context, indent=2)
-        })
+    print("DEBUG: FORCING PROXY CALL...", flush=True)
 
-    print("DEBUG: Calling LLM...", flush=True)
-
-    resp = get_client().chat.completions.create(
-        model=MODEL_NAME,
-        messages=messages,
-        temperature=0.0,
+    response = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": MODEL_NAME,
+            "messages": messages,
+            "temperature": 0.0,
+        },
+        timeout=30,
     )
 
-    print("DEBUG: LLM call successful", flush=True)
+    print(f"DEBUG: STATUS {response.status_code}", flush=True)
 
-    return resp.choices[0].message.content
+    response.raise_for_status()
+    data = response.json()
 
+    return data["choices"][0]["message"]["content"]
 
 # ── Task runner ────────────────────────────────────────────────────────────────
 def run_task(task_id: str) -> float:
@@ -200,7 +196,7 @@ def run_task(task_id: str) -> float:
     step = 0
     done = False
     max_steps = {"easy": 4, "medium": 6, "hard": 8}.get(task_id, 8)
-
+    print("DEBUG: Starting task loop", flush=True)
     while not done and step < max_steps:
         # FIXED: separate try blocks
         try:
