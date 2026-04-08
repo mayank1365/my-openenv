@@ -103,10 +103,48 @@ Omit "patch" when using validate_only:true.
 - params.format (date_parse): Python strptime format strings e.g. "%Y-%m-%d", "%Y/%m/%d"
 
 === DECISION RULES ===
-1. READ error_log FIRST...
-(unchanged)
-Respond ONLY with valid JSON. No markdown, no explanations outside the JSON.
-"""
+
+1. READ error_log FIRST. If it contains a step number and error type, fix that exact step.
+   - "Cannot cast X to int (null_handling='error'...)" → set params.null_handling to "coerce"
+   - "Column(s) not found: ['region']" at step N → fix the upstream select step to include that column
+
+2. If error_log is EMPTY, inspect current_output_rows for silent bugs:
+   - Are any values null that should not be? → check date_parse format or cast null_handling
+   - Is row count wrong (more rows than expected)? → check join for dedup_right:false with duplicate right_rows
+   - Are numeric values inflated (e.g. 2x expected)? → join duplication; set params.dedup_right=true
+
+3. Fix ROOT CAUSE, not symptoms:
+   - Missing column error in agg/filter → fix the upstream select step, NOT the agg step
+   - Do NOT patch aggregation params when the real issue is missing input columns
+
+4. NEVER repeat a patch you already applied. Check fix_attempts carefully before proposing a patch.
+   If a patch did not improve row_match, it either didn't fix the right thing or introduced the wrong value.
+   Try a DIFFERENT field or a DIFFERENT new_value.
+
+5. NEVER toggle between two values (e.g. "error" → "skip" → "error" → ...). If a value didn't work, move on.
+
+6. When unsure, validate first WITHOUT patching to inspect output:
+   {"diagnosis": "checking current state", "validate_only": true}
+
+7. Stop immediately when solved:
+   If comparison.row_match == 1.0:
+   {"diagnosis": "pipeline is fixed", "validate_only": true}
+
+=== MULTI-BUG STRATEGY (for hard tasks) ===
+When error_log is empty and row_match < 1.0 after a patch:
+- Check EVERY field in current_output_rows for anomalies, not just the one you fixed.
+- Common silent bug pairs:
+  a. Wrong date format (all dates become null) + join duplication (MRR inflated)
+  b. Fix them ONE at a time. After each patch, re-examine current_output_rows.
+
+=== ANTI-PATTERNS — NEVER DO THESE ===
+- Do NOT use null_handling="skip" — it is not a valid value
+- Do NOT modify params.right_rows directly — use params.dedup_right=true instead
+- Do NOT patch steps unrelated to the bug
+- Do NOT repeat the same (step_index, field, new_value) combination from fix_attempts
+- Do NOT make multiple changes in one patch
+
+Respond ONLY with valid JSON. No markdown, no explanations outside the JSON."""
 
 
 # ── Conversation history builder ───────────────────────────────────────────────
@@ -133,30 +171,50 @@ def _build_history(fix_attempts: list) -> list:
 
 # ── LLM call ──────────────────────────────────────────────────────────────────
 def call_llm(obs: dict, fix_attempts: list) -> str:
-    import requests
-
     base_url = os.environ["API_BASE_URL"].strip()
     api_key  = os.environ["API_KEY"].strip()
-
     url = f"{base_url}/chat/completions"
 
     initial_context = {
-        "pipeline_config": obs["pipeline_config"],
-        "error_log": obs["error_log"],
-        "sample_input_rows": obs["sample_input_rows"],
-        "current_output_rows": obs["current_output_rows"],
+        "pipeline_config":        obs["pipeline_config"],
+        "error_log":              obs["error_log"],
+        "sample_input_rows":      obs["sample_input_rows"],
+        "current_output_rows":    obs["current_output_rows"],
         "expected_output_schema": obs["expected_output_schema"],
-        "comparison": obs["comparison"],
-        "step_number": obs["step_number"],
+        "comparison":             obs["comparison"],
+        "step_number":            obs["step_number"],
     }
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": json.dumps(initial_context)}
-    ]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    if fix_attempts:
+        # Provide original context, history of attempts, then current state
+        messages.append({
+            "role":    "user",
+            "content": json.dumps(initial_context) + "\n\n[No patches applied yet. Diagnose the initial state.]"
+        })
+        messages.extend(_build_history(fix_attempts))
+        messages.append({
+            "role":    "user",
+            "content": (
+                f"Current state after {len(fix_attempts)} attempt(s):\n"
+                + json.dumps({
+                    "pipeline_config":     obs["pipeline_config"],
+                    "error_log":           obs["error_log"],
+                    "current_output_rows": obs["current_output_rows"],
+                    "comparison":          obs["comparison"],
+                }, indent=2)
+                + "\n\nWhat is your next action? Work towards solving the task."
+            )
+        })
+    else:
+        # First turn
+        messages.append({
+            "role":    "user",
+            "content": json.dumps(initial_context, indent=2)
+        })
 
     print("DEBUG: FORCING PROXY CALL...", flush=True)
-
     response = requests.post(
         url,
         headers={
@@ -172,10 +230,8 @@ def call_llm(obs: dict, fix_attempts: list) -> str:
     )
 
     print(f"DEBUG: STATUS {response.status_code}", flush=True)
-
     response.raise_for_status()
     data = response.json()
-
     return data["choices"][0]["message"]["content"]
 
 # ── Task runner ────────────────────────────────────────────────────────────────
