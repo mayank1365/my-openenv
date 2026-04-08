@@ -44,28 +44,32 @@ def get_client() -> OpenAI:
     """Return a cached OpenAI client using API_BASE_URL and API_KEY.
 
     The hackathon validator injects API_BASE_URL and API_KEY at runtime via
-    LiteLLM. We re-read from os.getenv() here so the module-level snapshot
-    does not matter — whatever the validator injects is always used.
+    LiteLLM, and explicitly checks for this instantiation signature.
     HF_TOKEN is accepted as a local-dev fallback only.
     """
     global _client
     if _client is None:
-        base_url = os.getenv("API_BASE_URL", API_BASE_URL)
-        # API_KEY is the validator-canonical name; HF_TOKEN is local-dev fallback
-        api_key  = os.getenv("API_KEY") or os.getenv("HF_TOKEN") or ""
-
-        if not base_url:
-            raise ValueError("API_BASE_URL is not set")
-        if not api_key:
-            raise ValueError(
-                "No API key found. Validator must inject API_KEY, "
-                "or set HF_TOKEN for local development."
+        try:
+            # Validator requirement: strict initialization from os.environ
+            _client = OpenAI(
+                base_url=os.environ["API_BASE_URL"],
+                api_key=os.environ["API_KEY"]
             )
+        except KeyError:
+            # Local-dev fallback
+            base_url = os.environ.get("API_BASE_URL", API_BASE_URL)
+            api_key  = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
+            
+            if not api_key:
+                raise ValueError(
+                    "No API key found. Validator must inject API_KEY, "
+                    "or set HF_TOKEN for local development."
+                )
 
-        _client = OpenAI(
-            base_url=base_url,
-            api_key=api_key,
-        )
+            _client = OpenAI(
+                base_url=base_url,
+                api_key=api_key,
+            )
     return _client
 
 SYSTEM_PROMPT = """You are a data engineering agent. You debug broken ETL pipeline configs.
