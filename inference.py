@@ -22,37 +22,38 @@ import requests
 from openai import OpenAI
 
 # ── Environment variables ─────────────────────────────────────────────────────
-# Validator injects API_BASE_URL, API_KEY, and MODEL_NAME.
-# Mandatory for the LiteLLM proxy required in Phase 2.
-MODEL_NAME   = os.getenv("MODEL_NAME")   or "llama-3.3-70b-versatile"
-ENV_URL      = os.getenv("ENV_URL")      or "https://hollow-abyss-my-env.hf.space"
+# MANDATORY: These are injected by the validator for LiteLLM proxy usage.
+# If missing, the script will intentionally fail to avoid bypassing the proxy.
+MODEL_NAME   = os.environ.get("MODEL_NAME", "llama-3.3-70b-versatile")
+ENV_URL      = os.getenv("ENV_URL") or "https://hollow-abyss-my-env.hf.space"
 BENCHMARK    = "data-pipeline-repair"
 
 # ── OpenAI client (lazy init) ──────────────────────────────────────────────────
 _client = None
 
 def get_client() -> OpenAI:
-    """Lazily initialize the OpenAI client with strict proxy parameters."""
+    """Lazily initialize the OpenAI client with zero-bypass strictness."""
     global _client
     if _client is not None:
         return _client
 
     try:
-        # MANDATORY: These must be injected by the validator for proxy logging.
-        # Using os.environ[] directly to ensure failure if bypassed/missing.
-        base_url = os.environ["API_BASE_URL"]
-        api_key  = os.environ["API_KEY"]
+        # STRICT: Sourced from os.environ. No defaults allowed to ensure compliance.
+        base_url = os.environ["API_BASE_URL"].strip()
+        api_key  = os.environ["API_KEY"].strip()
+        
+        # Diagnostic logging (visible in participant log)
+        print(f"DEBUG: Initializing proxy client with base_url={base_url[:15]}...", flush=True)
         
         _client = OpenAI(base_url=base_url, api_key=api_key)
         return _client
     except KeyError as e:
         raise EnvironmentError(
             f"Missing mandatory environment variable: {e}. "
-            "Validator must inject API_BASE_URL and API_KEY for proxy compliance."
+            "Validator injection of API_BASE_URL and API_KEY is REQUIRED."
         )
     except Exception as e:
-        # Caught by task runner's try/except block
-        raise RuntimeError(f"Failed to initialize OpenAI client (proxy): {e}")
+        raise RuntimeError(f"Failed to initialize LiteLLM proxy client: {e}")
 
 
 
