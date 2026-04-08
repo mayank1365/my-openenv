@@ -3,12 +3,13 @@ inference.py — Baseline LLM agent for data-pipeline-repair.
 
 Usage:
   export API_BASE_URL=https://api.groq.com/openai/v1   # injected by hackathon validator
-  export HF_TOKEN=<proxy-key>                           # injected by hackathon validator
+  export API_KEY=<proxy-key>                            # injected by hackathon validator
   export MODEL_NAME=llama-3.3-70b-versatile
   export ENV_URL=https://hollow-abyss-my-env.hf.space
   python inference.py
 
-NOTE: API_BASE_URL and HF_TOKEN are injected by the hackathon LiteLLM proxy.
+NOTE: API_BASE_URL and API_KEY are injected by the hackathon LiteLLM proxy.
+      API_KEY takes priority; HF_TOKEN is accepted as a local-dev fallback.
       load_dotenv(override=False) ensures injected env vars always take
       priority over any values in a local .env file.
 """
@@ -26,10 +27,11 @@ load_dotenv(override=False)
 # Checklist-required variable names and defaults:
 #   API_BASE_URL — has a sensible default
 #   MODEL_NAME   — has a sensible default
-#   HF_TOKEN     — NO default; must be injected at runtime
+#   API_KEY      — injected by validator; no default. HF_TOKEN accepted as local-dev fallback.
 API_BASE_URL     = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
 MODEL_NAME       = os.getenv("MODEL_NAME",   "llama-3.3-70b-versatile")
-HF_TOKEN         = os.getenv("HF_TOKEN")      # injected by validator; no default
+# Validator injects API_KEY; HF_TOKEN is the local-dev fallback — never hardcode.
+API_KEY          = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
 
 # Optional - if you use from_docker_image():
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
@@ -39,20 +41,26 @@ ENV_URL = os.getenv("ENV_URL", "https://hollow-abyss-my-env.hf.space")
 _client = None
 
 def get_client() -> OpenAI:
-    """Return a cached OpenAI client using API_BASE_URL and HF_TOKEN.
+    """Return a cached OpenAI client using API_BASE_URL and API_KEY.
 
-    The hackathon validator injects both variables at runtime via LiteLLM.
-    We read them fresh from os.getenv() so the proxy key is always used.
+    The hackathon validator injects API_BASE_URL and API_KEY at runtime via
+    LiteLLM. We re-read from os.getenv() here so the module-level snapshot
+    does not matter — whatever the validator injects is always used.
+    HF_TOKEN is accepted as a local-dev fallback only.
     """
     global _client
     if _client is None:
         base_url = os.getenv("API_BASE_URL", API_BASE_URL)
-        api_key  = os.getenv("HF_TOKEN", HF_TOKEN or "")
+        # API_KEY is the validator-canonical name; HF_TOKEN is local-dev fallback
+        api_key  = os.getenv("API_KEY") or os.getenv("HF_TOKEN") or ""
 
         if not base_url:
             raise ValueError("API_BASE_URL is not set")
         if not api_key:
-            raise ValueError("HF_TOKEN is not set — the hackathon proxy must inject this")
+            raise ValueError(
+                "No API key found. Validator must inject API_KEY, "
+                "or set HF_TOKEN for local development."
+            )
 
         _client = OpenAI(
             base_url=base_url,
