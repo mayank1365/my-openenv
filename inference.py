@@ -30,21 +30,21 @@ ENV_URL      = os.getenv("ENV_URL")      or "https://hollow-abyss-my-env.hf.spac
 BENCHMARK    = "data-pipeline-repair"
 
 # ── OpenAI client ─────────────────────────────────────────────────────────────
-# Primary path: use injected vars via os.environ[] (validator requirement).
-# Fallback: use os.getenv() for local dev when API_KEY comes via HF_TOKEN.
-try:
-    client = OpenAI(
-        base_url=os.environ["API_BASE_URL"],
-        api_key=os.environ["API_KEY"],
+# Validator injects API_BASE_URL and API_KEY; HF_TOKEN is local-dev fallback.
+# Use os.getenv() (never os.environ[]) to avoid KeyError on missing vars.
+if not API_KEY:
+    raise EnvironmentError(
+        "No API key found. Set API_KEY (injected by validator) "
+        "or HF_TOKEN for local development."
     )
-except KeyError:
-    # Local dev: API_KEY not set, HF_TOKEN used as fallback
-    if not API_KEY:
-        raise EnvironmentError(
-            "No API key found. Set API_KEY (injected by validator) "
-            "or HF_TOKEN for local development."
-        )
+
+try:
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+except Exception as _client_err:
+    raise RuntimeError(
+        f"Failed to initialise OpenAI client "
+        f"(base_url={API_BASE_URL!r}): {_client_err}"
+    ) from _client_err
 
 
 # ── Stdout logging helpers ────────────────────────────────────────────────────
