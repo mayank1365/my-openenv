@@ -1,18 +1,14 @@
+spec_version: "1.0"
 name: data-pipeline-repair
+type: environment
+runtime: python3.11
+app: server.app:app
+port: 7860
 version: "1.0.0"
 description: >
   An OpenEnv environment where an LLM/RL agent diagnoses and repairs broken
   ETL pipeline configurations. The agent iteratively patches a pipeline config
   JSON and validates output against expected rows using a real Python executor.
-  Covers type errors, missing columns, date format mismatches, and silent join
-  duplication bugs.
-author: "your-hf-username"
-tags:
-  - openenv
-  - data-engineering
-  - debugging
-  - structured-output
-  - real-world
 
 observation_space:
   type: dict
@@ -40,7 +36,7 @@ action_space:
       required: false
       fields:
         step_index: {type: int,    description: "0-indexed step in pipeline_config.steps"}
-        field:      {type: str,    description: "Dot-notation path, e.g. params.null_handling"}
+        field:      {type: str,    description: "Config field to update"}
         old_value:  {type: any,    required: false}
         new_value:  {type: any,    description: "Replacement value"}
     validate_only:
@@ -50,49 +46,25 @@ action_space:
 
 reward:
   type: float
-  range: [-0.20, 0.35]
-  description: >
-    Per-step reward. Positive for correct diagnosis keywords, schema fix,
-    row match improvement, and solving the task. Negative for wasted patches,
-    wrong step targets, and post-solve actions.
+  range: [-0.20, 1.0]
 
 tasks:
   - id: easy
-    description: >
-      Single type-cast bug. The pipeline crashes with a ValueError when
-      casting "N/A" to int. Fix: set null_handling to "coerce" in step 0.
+    description: "Type Cast Failure: Pipeline crashes on invalid date strings. Patch null_handling to coerce."
     max_steps: 4
-    success_threshold: 0.80
+    success_threshold: 0.90
 
   - id: medium
-    description: >
-      Upstream column dropped in select, causing a KeyError in the downstream
-      aggregation. Fix: add "region" back to step 1's columns list.
+    description: "Silent Schema Mismatch: Aggregation produces wrong column names. Add explicit output_name mappings."
     max_steps: 6
-    success_threshold: 0.75
+    success_threshold: 0.90
 
   - id: hard
-    description: >
-      Two silent bugs with no error log. Bug 1: wrong date format causes
-      all dates to become null. Bug 2: duplicate join keys inflate MRR sums.
-      Agent must diff actual vs expected output and issue two patches.
+    description: "Silent Bugs: Multi-step errors. Fix wrong deduplication key and silent date cast drops."
     max_steps: 8
-    success_threshold: 0.70
+    success_threshold: 0.95
 
 endpoints:
-  reset:
-    method: POST
-    path: /reset
-    body: '{"task": "easy|medium|hard"}'
-    returns: Observation
-
-  step:
-    method: POST
-    path: /step
-    body: Action
-    returns: "{observation, reward, done, info}"
-
-  state:
-    method: GET
-    path: /state
-    returns: "Session metadata"
+  reset: {method: POST, path: /reset}
+  step:  {method: POST, path: /step}
+  state: {method: GET,  path: /state}

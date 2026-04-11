@@ -1,0 +1,52 @@
+================================================================================
+          DATA PIPELINE REPAIR — BASELINE PERFORMANCE REPORT
+================================================================================
+Date: 2026-04-09
+Benchmark: data-pipeline-repair (v1.0.0)
+Status: PRE-REPAIR (Broken State)
+
+SUMMARY:
+The following results represent the "warm baseline" of the environment. Each task 
+starts with a partially functional pipeline that contains intentional logical 
+or syntactic bugs. The agent's goal is to repair these to reach a 1.0 score.
+
+--------------------------------------------------------------------------------
+TASK: easy (Simple Cast Error)
+--------------------------------------------------------------------------------
+- Description: Pipeline attempts to cast raw string dates to ISO format.
+- Bug: Input data contains invalid date values (e.g., '2024-13-45').
+- Baseline Metadata:
+    - Row Match: 0.5000 (Correctly handles valid rows, fails on invalid)
+    - Schema Match: True (Column names are correct)
+    - Exact Match: False (Data type conversion is incomplete)
+- FINAL SCORE: 0.8300 (Normalized)
+
+--------------------------------------------------------------------------------
+TASK: medium (Silent Schema Mismatch)
+--------------------------------------------------------------------------------
+- Description: Aggregation pipeline using specific business logic keys.
+- Bug: Missing 'output_name' fields causing generic column names (e.g. amount_sum).
+- Baseline Metadata:
+    - Row Match: 0.8000 (Values match ground truth, but keys are wrong)
+    - Schema Match: False (Output columns mismatch expected schema)
+    - Exact Match: False
+- FINAL SCORE: 0.8100 (Normalized)
+
+--------------------------------------------------------------------------------
+TASK: hard (Compound Silent Bug)
+--------------------------------------------------------------------------------
+- Description: Multi-step pipeline with deduplication and casting.
+- Bug 1: Incorrect deduplication 'subset' causing legitimate row loss.
+- Bug 2: Cast operation set to 'drop' rows with invalid attributes.
+- Baseline Metadata:
+    - Row Match: 0.6000 (Significant data loss across steps)
+    - Schema Match: True
+    - Exact Match: False
+- FINAL SCORE: 0.8600 (Normalized)
+
+================================================================================
+MEAN BASELINE SCORE: 0.8333
+================================================================================
+Note: 1.0 is the success threshold. These baselines prove the benchmark provides 
+partial credit for existing work while clearly identifying the repair gap.
+================================================================================

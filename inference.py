@@ -20,10 +20,18 @@ import json
 import time
 import requests
 from openai import OpenAI
+from dotenv import load_dotenv
+
+# Load .env file for local development
+load_dotenv()
+
+# Local development fallback: if API_KEY is missing, use HF_TOKEN
+if "API_KEY" not in os.environ and "HF_TOKEN" in os.environ:
+    os.environ["API_KEY"] = os.environ["HF_TOKEN"]
 
 # ── Environment variables ─────────────────────────────────────────────────────
 MODEL_NAME   = os.environ.get("MODEL_NAME", "llama-3.3-70b-versatile")
-ENV_URL      = os.getenv("ENV_URL") or "https://hollow-abyss-my-env.hf.space"
+ENV_URL      = os.getenv("ENV_URL") or "http://localhost:7860"
 BENCHMARK    = "data-pipeline-repair"
 
 # ── OpenAI client (lazy init) ──────────────────────────────────────────────────
@@ -38,20 +46,17 @@ def get_client() -> OpenAI:
         base_url = os.environ["API_BASE_URL"].strip()
         api_key  = os.environ["API_KEY"].strip()
 
-        # DEBUG logs (added)
-        print(f"DEBUG ENV BASE_URL: {base_url}", flush=True)
-        print(f"DEBUG ENV API_KEY: {api_key[:5]}***", flush=True)
-        print(f"DEBUG: Initializing proxy client with base_url={base_url[:15]}...", flush=True)
-
         _client = OpenAI(base_url=base_url, api_key=api_key)
         return _client
+
     except KeyError as e:
         raise EnvironmentError(
             f"Missing mandatory environment variable: {e}. "
-            "Validator injection of API_BASE_URL and API_KEY is REQUIRED."
+            "Please ensure API_BASE_URL and API_KEY (or HF_TOKEN) are set in your .env file."
         )
     except Exception as e:
         raise RuntimeError(f"Failed to initialize LiteLLM proxy client: {e}")
+
 
 
 # ── Stdout logging helpers ────────────────────────────────────────────────────
@@ -89,7 +94,7 @@ At each step you receive a JSON observation and must respond with exactly ONE JS
   "diagnosis": "<root cause hypothesis — be specific>",
   "patch": {
     "step_index": <int: 0-indexed step to fix>,
-    "field": "<dot.notation path e.g. params.null_handling>",
+    "field": "<config_field_to_update>",
     "old_value": <current value, optional>,
     "new_value": <replacement value>
   },
@@ -97,54 +102,20 @@ At each step you receive a JSON observation and must respond with exactly ONE JS
 }
 Omit "patch" when using validate_only:true.
 
-=== VALID FIELD VALUES ===
-- params.null_handling: ONLY "coerce", "drop", or "error". NEVER use "skip", "ignore", or any other value.
-- params.dedup_right: true or false (boolean, not string)
-- params.format (date_parse): Python strptime format strings e.g. "%Y-%m-%d", "%Y/%m/%d"
-
 === DECISION RULES ===
 
 1. READ error_log FIRST. If it contains a step number and error type, fix that exact step.
-   - "Cannot cast X to int (null_handling='error'...)" → set params.null_handling to "coerce"
-   - "Column(s) not found: ['region']" at step N → fix the upstream select step to include that column
+   - "ValueError: invalid date X" → set null_handling to "coerce" in the failing cast step.
+   - "KeyError: 'total_amount'" at step 2 → fix step 2 (agg) by adding explicit "output_name".
 
 2. If error_log is EMPTY, inspect current_output_rows for silent bugs:
-   - Are any values null that should not be? → check date_parse format or cast null_handling
-   - Is row count wrong (more rows than expected)? → check join for dedup_right:false with duplicate right_rows
-   - Are numeric values inflated (e.g. 2x expected)? → join duplication; set params.dedup_right=true
+   - Are any values null that should not be? → check if null_handling="drop" is deleting rows.
+   - Is row count wrong (missing legitimate transactions)? → check dedup "subset" for non-unique keys like [user_id, date]. Change to [txn_id].
 
 3. Fix ROOT CAUSE, not symptoms:
-   - Missing column error in agg/filter → fix the upstream select step, NOT the agg step
-   - Do NOT patch aggregation params when the real issue is missing input columns
+   - Only patch the field that directly addresses the documented bug.
 
-4. NEVER repeat a patch you already applied. Check fix_attempts carefully before proposing a patch.
-   If a patch did not improve row_match, it either didn't fix the right thing or introduced the wrong value.
-   Try a DIFFERENT field or a DIFFERENT new_value.
-
-5. NEVER toggle between two values (e.g. "error" → "skip" → "error" → ...). If a value didn't work, move on.
-
-6. When unsure, validate first WITHOUT patching to inspect output:
-   {"diagnosis": "checking current state", "validate_only": true}
-
-7. Stop immediately when solved:
-   If comparison.row_match == 1.0:
-   {"diagnosis": "pipeline is fixed", "validate_only": true}
-
-=== MULTI-BUG STRATEGY (for hard tasks) ===
-When error_log is empty and row_match < 1.0 after a patch:
-- Check EVERY field in current_output_rows for anomalies, not just the one you fixed.
-- Common silent bug pairs:
-  a. Wrong date format (all dates become null) + join duplication (MRR inflated)
-  b. Fix them ONE at a time. After each patch, re-examine current_output_rows.
-
-=== ANTI-PATTERNS — NEVER DO THESE ===
-- Do NOT use null_handling="skip" — it is not a valid value
-- Do NOT modify params.right_rows directly — use params.dedup_right=true instead
-- Do NOT patch steps unrelated to the bug
-- Do NOT repeat the same (step_index, field, new_value) combination from fix_attempts
-- Do NOT make multiple changes in one patch
-
-Respond ONLY with valid JSON. No markdown, no explanations outside the JSON."""
+4. Respond ONLY with valid JSON. No markdown, no explanations outside the JSON."""
 
 
 # ── Conversation history builder ───────────────────────────────────────────────
@@ -301,7 +272,7 @@ def run_task(task_id: str) -> float:
     best_possible = 0.70
     raw_score = sum(rewards)
     score = round(min(1.0, max(0.0, (raw_score - min_possible) / (best_possible - min_possible))), 4)
-    success = score >= {"easy": 0.80, "medium": 0.75, "hard": 0.70}.get(task_id, 0.70)
+    success = score >= {"easy": 0.90, "medium": 0.90, "hard": 0.95}.get(task_id, 0.95)
 
     log_end(success=success, steps=step, score=score, rewards=rewards)
     return score

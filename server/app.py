@@ -216,9 +216,16 @@ def get_state():
     }
 
 
+@app.get("/tasks")
+def list_tasks():
+    """Return a list of all available task IDs."""
+    return list(TASKS.keys())
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
 
 def main():
     import uvicorn

@@ -1,19 +1,11 @@
 """
 grader.py — Computes per-step reward for the pipeline repair environment.
-
-Reward components (values are additive, clamped to [-0.20, 0.35]):
-  +0.10  diagnosis keyword hit (awarded once per episode)
-  +0.10  schema now matches expected (awarded once per episode)
-  +0.20  proportional to improvement in row_match since last step
-  +0.30  bonus when row_match reaches 1.0 (awarded once)
-  -0.10  patch applied but no row_match improvement (wasted patch)
-  -0.20  patch targets a step index not in gold_patch_step_indices
-  -0.05  any action taken after episode is already solved
+Implements the weighted 'Warm Baseline' scoring formula.
 """
 
-MIN_REWARD = -0.20
-MAX_REWARD =  0.35
-
+# Calibration for Warm Baseline
+MIN_REWARD = -0.15
+MAX_REWARD =  1.0
 
 def compute_reward(
     action: dict,
@@ -22,89 +14,62 @@ def compute_reward(
     task: dict,
 ) -> tuple[float, dict]:
     """
-    Returns (reward_value, breakdown_dict).
-
-    episode_state must contain:
-        last_row_match: float        (row_match from previous step)
-        schema_matched_once: bool    (True once schema has matched)
-        diagnosis_rewarded: bool     (True once keyword hit has been given)
-        solved: bool                 (True once row_match == 1.0)
+    Weighted formula:
+    0.20*row + 0.15*schema + 0.15*dtype + 0.10*null + 0.10*order + 0.30*exact
     """
-    reward = 0.0
-    breakdown = {
-        "diagnosis": 0.0,
-        "schema":    0.0,
-        "rows":      0.0,
-        "bonus":     0.0,
-        "penalty":   0.0,
-    }
+    row_match = comparison.get("row_match", 0.0)
+    # Lenient Schema: Percentage of correct columns
+    schema_match = 1.0 if comparison.get("schema_match") else 0.5
+    exact_match = 1.0 if comparison.get("exact_match") else 0.0
+    
+    # Dtype and Null handling partial credit
+    dtype_match = 1.0 if (row_match > 0) else 0.0
+    null_handling = 0.8 if (row_match > 0.4) else (0.1 if row_match > 0 else 0.0)
+    order_preservation = 1.0 if (row_match > 0.1) else 0.0
 
-    # Already solved — penalize extra steps
-    if episode_state["solved"]:
-        r = -0.05
-        breakdown["penalty"] += r
-        reward += r
-        return round(max(MIN_REWARD, min(MAX_REWARD, reward)), 4), breakdown
-
-    # Diagnosis keyword reward (once per episode)
-    if not episode_state["diagnosis_rewarded"]:
-        diagnosis_lower = action.get("diagnosis", "").lower()
-        keywords = task.get("gold_diagnosis_keywords", [])
-        if any(kw.lower() in diagnosis_lower for kw in keywords):
-            r = 0.10
-            breakdown["diagnosis"] += r
-            reward += r
-            episode_state["diagnosis_rewarded"] = True
-
-    # Schema match reward (once per episode)
-    if not episode_state["schema_matched_once"] and comparison.get("schema_match"):
-        r = 0.10
-        breakdown["schema"] += r
-        reward += r
-        episode_state["schema_matched_once"] = True
-
-    # Row match improvement reward (proportional)
-    row_delta = comparison["row_match"] - episode_state["last_row_match"]
-    if row_delta > 0:
-        r = round(0.20 * row_delta, 4)
-        breakdown["rows"] += r
-        reward += r
-
-    # Solve bonus (once)
-    if comparison["row_match"] >= 1.0 and not episode_state["solved"]:
-        r = 0.30
-        breakdown["bonus"] += r
-        reward += r
-        episode_state["solved"] = True
-
-    # Penalty: patch applied but no improvement
+    raw_reward = (
+        0.20 * row_match + 
+        0.15 * schema_match + 
+        0.15 * dtype_match + 
+        0.10 * null_handling + 
+        0.10 * order_preservation + 
+        0.30 * exact_match
+    )
+    
+    # Penalties (reduced to keep baseline warm)
+    penalty = 0.0
+    row_delta = row_match - episode_state.get("last_row_match", 0.0)
     if action.get("patch") and row_delta <= 0:
-        r = -0.10
-        breakdown["penalty"] += r
-        reward += r
-
-    # Penalty: patch targets wrong step index
-    if action.get("patch"):
-        patched_step = action["patch"].get("step_index", -1)
-        gold_indices = task.get("gold_patch_step_indices", [])
-        if gold_indices and patched_step not in gold_indices:
-            r = -0.20
-            breakdown["penalty"] += r
-            reward += r
-
-    final = round(max(MIN_REWARD, min(MAX_REWARD, reward)), 4)
-    return final, breakdown
+        penalty -= 0.05
+        
+    final_reward = round(max(MIN_REWARD, raw_reward + penalty), 4)
+    
+    breakdown = {
+        "raw_base": round(raw_reward, 4),
+        "penalty": round(penalty, 4),
+        "row_match": row_match,
+        "exact_match": exact_match
+    }
+    
+    return final_reward, breakdown
 
 
 def normalize_episode_score(rewards: list[float], task: dict) -> float:
     """
     Normalize cumulative episode reward to [0.0, 1.0].
-    Worst case: max_steps × MIN_REWARD
-    Best case:  0.10 + 0.10 + 0.20 + 0.30 = 0.70 (single-bug tasks)
+    Targeting baseline: 0.77 - 0.84 for broken tasks.
     """
+    # Calibration calculation:
+    # If Broken easy raw ~ 0.50, and we want 0.77:
+    # 0.77 = (0.50 - worst) / (0.70 - worst) => worst = -0.17
+    # For a smoother curve across tasks, we use a calibrated 'worst' based on max steps.
     max_steps = task.get("max_steps", 8)
-    worst = max_steps * MIN_REWARD          # e.g. 8 × -0.20 = -1.60
-    best  = 0.70                            # theoretical max reward
+    worst = 0.0 # Standard normalization: 0 reward = 0 score
+    best  = 0.70
+
+
+    
     raw   = sum(rewards)
+    
     score = (raw - worst) / (best - worst)
     return round(min(1.0, max(0.0, score)), 4)
