@@ -153,6 +153,3 @@ The environment provides a high-fidelity reward signal based on the following we
 The raw cumulative reward is normalized to `[0.0, 1.0]` where **0.70 raw reward** represents a perfect repair (Full Marks).
 
 ---
-
-## 📜 License
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
